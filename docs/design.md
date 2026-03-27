@@ -1,78 +1,103 @@
 # Design Doc
 
-## Overview
+## What This Repo Is
 
-`mini-kernel-lib` is a small CUDA-first kernel library.
+This repo is me trying to build a small CUDA-first kernel library.
 
-The first version is not trying to match cuBLAS or cuDNN. The goal is a small
-API and a codebase with a clean split between API, runtime, planner, registry,
-and kernels.
+I am not trying to clone cuBLAS or cuDNN. The part I care about is the overall
+shape:
 
-## Why This Exists
+- a small public API
+- explicit handles, descriptors, streams, and workspace
+- a dispatch layer between the API and the actual kernels
 
-Writing custom CUDA kernels directly inside an app gets messy quickly. Full
-vendor libraries solve a lot, but they also come with a large API surface and
-their own complexity.
+Right now I want something small enough that I can actually finish and iterate
+on without needing a huge amount of compute.
 
-This project sits in the middle. It should cover a few common ops with a small
-API and predictable dispatch.
+## Current State
 
-## Goals
+What exists in the repo so far:
 
-- Keep the public API small and explicit.
-- Keep API code separate from kernel selection and backend code.
-- Make dispatch decisions visible and testable.
-- Treat correctness tests and benchmarks as required, not optional.
-- Leave room for autotuning or more backends later without rewriting the API.
+- CMake skeleton
+- C API scaffold
+- handle API
+- tensor descriptor API
+- GEMM entry points
+- planner / registry / backend split
+- smoke test
+- benchmark stub
 
-## Not in Scope
+What does not exist yet:
 
-- Full cuBLAS or cuDNN compatibility.
-- Wide support for every dtype, layout, and architecture.
-- A graph compiler, fusion compiler, or training runtime.
-- Hiding all hardware details from the caller.
-- Building a portability layer too early if CUDA is the only backend.
+- real CUDA kernels
+- real kernel registration
+- real dispatch heuristics
+- correctness tests against actual GPU work
+- benchmark numbers that mean anything
 
-## Principles
+## What I Want Out Of This
 
-- Start with a C ABI. Add a C++ wrapper later if it earns its keep.
-- Use opaque handles and descriptors.
-- Make stream and workspace handling explicit.
-- Keep the public status/error model small and stable.
-- Keep public entry points small even if internals use templates.
+The goal is to have a small library for a few common ops with a clean enough
+structure that I can keep adding kernels without rewriting everything every
+time.
 
-## Initial Target Scope
+The main things I care about:
 
-Phase 1:
+- small public API
+- explicit state instead of hidden global behavior
+- room for multiple kernel variants later
+- correctness and benchmarking from the start
 
-- GEMM
-- Pointwise ops and fused epilogues
-- Reductions
-- Normalization primitives
+I do not want this to turn into a random pile of kernels dumped into one file.
 
-Phase 2:
+## Scope Right Now
 
-- Convolution forward
-- Additional epilogue fusion patterns
-- Autotuning and algorithm caching
-- More dtype support, including lower precision formats
+Current plan:
 
-## Public API Model
+- CUDA only
+- GEMM first
+- pointwise / fused epilogues after that
+- reductions
+- normalization
 
-Start with a C ABI, opaque handles, and explicit descriptors.
+Later, if the basic shape holds up:
 
-Core API concepts:
+- convolution forward
+- better dispatch heuristics
+- autotuning or algorithm cache
+- wider dtype support
 
-- `handle`: library state, bound to a device/context and stream
-- `tensor descriptor`: dtype, rank, sizes, strides, layout info
-- `operation descriptor`: operation-specific configuration
-- `workspace query`: caller asks how much temporary memory an op needs
-- `status`: every public call returns one
+I am intentionally not trying to cover everything up front.
 
-Do not use `mkl*` as a prefix because Intel MKL already owns that space. Use
-`mklib*` until the project has a final name.
+## What I Am Not Doing Yet
 
-Example shape:
+Not trying to do any of this right now:
+
+- full cuBLAS compatibility
+- full cuDNN compatibility
+- every dtype / layout / architecture
+- graph compiler stuff
+- training runtime stuff
+- multi-backend portability for day one
+
+If CUDA-first ends up being too limiting later, I can revisit that then.
+
+## API Direction
+
+I want the public surface to stay simple and explicit.
+
+The rough model is:
+
+- `handle` for library state
+- `tensor descriptor` for dtype / rank / sizes / strides
+- operation-specific descriptors where needed
+- explicit workspace size queries
+- explicit status return on every public call
+
+I am using `mklib*` as a temporary prefix for now. I do not want to use `mkl*`
+because that already collides with Intel MKL.
+
+Current GEMM API shape in the repo is basically:
 
 ```c
 typedef struct mklibHandle* mklibHandle_t;
@@ -105,152 +130,109 @@ mklibStatus_t mklibGemm(
     size_t workspace_size);
 ```
 
-Notes:
+This is still early and I expect it to move around.
 
-- `void* stream` is just a placeholder in the sketch.
-- The first version should have a small set of operation entry points.
-- Descriptor creation should be cheap. Large allocations inside descriptors are
-  a bad sign.
+## Code Layout I Am Aiming For
 
-## Internal Architecture
+The current split is:
 
-Split the code into these layers:
+1. API
+   - public entry points
+   - validation
+   - object lifetime
+2. Runtime
+   - handle state
+   - descriptor state
+3. Planner
+   - build a dispatch key from the op description
+4. Registry
+   - choose a kernel from available metadata
+5. Backend
+   - actual launch path
+   - CUDA-specific code
 
-1. API layer
-   - Argument validation
-   - Status/error mapping
-   - Public object lifetime
-2. Runtime layer
-   - Device and stream binding
-   - Capability queries
-   - Workspace helpers
-3. Planner/dispatcher
-   - Convert descriptors into a dispatch key
-   - Choose algorithm/kernel variant
-   - Apply heuristics and determinism rules
-4. Kernel registry
-   - Static registration of available kernels
-   - Metadata: supported dtypes, layouts, tile shapes, alignment requirements,
-     architecture support
-5. Backend implementation
-   - CUDA launchers
-   - Kernel source and low-level tuning code
+The main reason for this split is that I do not want the public API code to
+turn into a mess of hard-coded kernel decisions.
 
-Public API code should not contain device-specific dispatch logic. Keep that in
-the planner/registry path.
+## Dispatch Plan
 
-## Dispatch Model
+I want dispatch to be based on a structured key instead of scattered condition
+chains.
 
-Use a structured dispatch key instead of scattered `if` chains.
+For GEMM, that key will probably include at least:
 
-The dispatch key will likely include:
+- dtype / compute type
+- transpose flags
+- problem size bucket
+- architecture
+- alignment info
+- maybe layout class later
 
-- operation family
-- architecture / compute capability
-- input and output dtypes
-- layout or stride class
-- alignment guarantees
-- problem-shape bucket
-- math mode
-- determinism requirement
-- fused epilogue kind, if any
+Right now the planner and registry are just stubs, but this is the shape I want
+to grow into.
 
-Phase 1 should use static heuristics and hand-written registry metadata.
+## First Kernel Plan
 
-## Kernel Strategy
+The first real thing I want is one actual GEMM path end to end:
 
-Start with a few kernels that matter instead of a long list of weak ones.
+- descriptor / API path
+- dispatch key
+- one registered kernel
+- CUDA launch
+- correctness check
+- benchmark result
 
-Suggested order:
+I would rather have one real GEMM path than five half-built ops.
 
-1. GEMM
-2. Pointwise fusion around GEMM outputs
-3. Reductions
-4. Normalization
-5. Convolution forward
+## Dtypes And Layouts
 
-Early rules:
-
-- Prefer hand-written kernels and simple template specialization.
-- Keep generated code optional.
-- Keep kernel metadata close to the implementation that owns it.
-- Make launch configuration visible in logs or debug builds.
-
-## Data Types and Layouts
-
-Initial dtypes:
+The first dtypes I care about are:
 
 - FP32
 - FP16
 - BF16
 
-Later:
+I will probably start with the simplest thing that gets a real result and not
+pretend I support more than I actually do.
 
-- INT8
-- FP8
+For layouts, I want descriptors to stay stride-based instead of baking too much
+layout logic into the type system.
 
-Layouts:
+## Workspace / Memory
 
-- GEMM should support row-major and column-major style access patterns via
-  strides rather than separate type hierarchies.
-- DNN-style ops should likely optimize for NHWC on CUDA, but descriptors should
-  stay stride-based so the API is not hard-wired to one layout.
+The caller should own tensor memory.
 
-## Memory and Workspace Model
+I want operation calls to be explicit about workspace:
 
-The caller owns tensor memory. Public operation calls should not allocate hidden
-scratch buffers in the hot path.
+- query workspace size first
+- pass workspace in explicitly
+- avoid hidden allocations in the hot path
 
-Rules:
+If I ever add exceptions to that, they should be obvious and documented.
 
-- Workspace size can be queried ahead of time.
-- Workspace can be reused across calls.
-- No-workspace paths should exist where practical.
-- Temporary allocations in public op entry points are a bug unless documented.
+## Testing / Benchmarking
 
-## Error Handling and Diagnostics
+I want both from the start, even if they start small.
 
-Public calls should return stable status codes. Internals can use richer error
-types, but they need to map back to a small public status set.
+Correctness plan:
 
-Diagnostics should include:
+- CPU reference checks where practical
+- shape coverage
+- edge cases
+- simple deterministic behavior where applicable
 
-- invalid argument reporting
-- unsupported configuration reporting
-- optional verbose dispatch logging
-- version and capability queries
+Benchmarking plan:
 
-## Testing Strategy
+- benchmark harness in repo
+- record hardware / dtype / shape
+- no big performance claims without measurements
 
-Correctness and performance both matter.
+Right now the benchmark target is just a stub, which is fine for the current
+stage.
 
-Correctness:
+## Repo Shape
 
-- reference comparisons against CPU implementations where practical
-- randomized shape coverage
-- edge-case coverage for zero sizes, alignment boundaries, and non-contiguous
-  strides
-- determinism tests where determinism is part of the contract
-
-Performance:
-
-- benchmark harness checked into the repo
-- architecture and dtype recorded with every result
-- no performance claim without measurement methodology
-- compare against strong baselines when the comparison is fair and repeatable
-
-## Build and Tooling Direction
-
-Starting point:
-
-- CMake
-- C++20 for implementation code
-- CUDA toolchain for the first backend
-
-Assume out-of-tree builds and a clean split between public headers and backend
-code.
-
-## Proposed Repository Layout
+This is the layout I am building toward:
 
 ```text
 include/
@@ -273,53 +255,51 @@ docs/
 cmake/
 ```
 
-Not every directory needs to exist on day one, but the repo should grow in that
-direction instead of turning into a flat `src/` dump.
+Not every directory needs to exist immediately, but this is the structure I
+want instead of a flat repo.
 
-## Milestones
+## Milestones I Have In Mind
 
 M0:
 
-- repository bootstrap
+- repo bootstrap
 - README
 - design doc
-- basic contribution conventions
+- initial API / build scaffold
 
 M1:
 
-- build system skeleton
-- status codes and handle lifetime
-- device/stream binding
-- first benchmark harness skeleton
+- status / handle / descriptor path usable
+- benchmark and test skeletons in place
+- planner / registry / backend split stubbed out
 
 M2:
 
-- first GEMM path end to end
-- descriptor plumbing
-- correctness tests
+- first real GEMM path
+- correctness test
+- first benchmark number
 
 M3:
 
-- fused pointwise and reduction primitives
-- workspace query and reuse model stabilized
+- better GEMM path or second GEMM variant
+- fused pointwise work
+- more validation around workspace / descriptors
 
 M4:
 
-- convolution forward prototype
-- better dispatch heuristics
+- reductions or normalization
+- better dispatch logic
 
 M5:
 
-- autotuning or algorithm-cache experiments
-- packaging and release hygiene
+- convolution forward if the rest still feels clean
+- autotuning experiments if they seem worth it
 
 ## Open Questions
 
-- What final project name and API prefix should replace `mklib*`?
-- Should the first public surface be pure C, or C plus a small C++ wrapper?
-- How much should descriptors normalize layouts versus just preserving raw
-  strides?
-- Is CUDA-only the right first step, or should a portability layer exist from
-  the start?
-- Which baselines matter most early on: custom kernels, cuBLAS/cuDNN, or
-  framework-level calls?
+- What final project name should replace `mini-kernel-lib`?
+- What final API prefix should replace `mklib*`?
+- Should the public surface stay pure C for a while, or should I add a C++
+  wrapper early?
+- How much logic should live in descriptors versus raw op descriptors?
+- What is the cheapest useful GPU target for early tuning passes?
