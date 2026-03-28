@@ -1,9 +1,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <iomanip>
+#include <iostream>
 #include <numeric>
 #include <vector>
-#include <iostream>
 
 #include "mklib/mklib.h"
 
@@ -44,6 +44,7 @@ int main(int argc, char** argv) {
   int64_t m = 256;
   int64_t n = 256;
   int64_t k = 256;
+  bool autotune = false;
 
   if (argc > 1) {
     iterations = ParsePositiveSizeT(argv[1], iterations);
@@ -60,12 +61,24 @@ int main(int argc, char** argv) {
   if (argc > 5) {
     warmup_iterations = ParsePositiveSizeT(argv[5], warmup_iterations);
   }
+  if (argc > 6) {
+    autotune = ParsePositiveInt64(argv[6], 0) != 0;
+  }
 
   mklibHandle_t handle = nullptr;
   const mklibStatus_t create_status = mklibCreate(&handle);
   if (create_status != MKLIB_STATUS_SUCCESS) {
     std::cerr << "mklibCreate failed: " << mklibGetStatusString(create_status) << '\n';
     return 1;
+  }
+  if (autotune) {
+    const mklibStatus_t autotune_status = mklibSetAutotuneMode(handle, MKLIB_AUTOTUNE_ON);
+    if (autotune_status != MKLIB_STATUS_SUCCESS) {
+      std::cerr << "mklibSetAutotuneMode failed: "
+                << mklibGetStatusString(autotune_status) << '\n';
+      mklibDestroy(handle);
+      return 1;
+    }
   }
 
   const mklibGemmDesc_t desc = {
@@ -81,6 +94,7 @@ int main(int argc, char** argv) {
       .lda = k,
       .ldb = n,
       .ldc = n,
+      .epilogue = MKLIB_POINTWISE_MODE_IDENTITY,
   };
 
   size_t workspace_bytes = 0;
@@ -95,9 +109,12 @@ int main(int argc, char** argv) {
   auto a = MakeMatrix(desc.m, desc.k, desc.lda, 3);
   auto b = MakeMatrix(desc.k, desc.n, desc.ldb, 11);
   std::vector<float> c(static_cast<size_t>(desc.m * desc.ldc), 0.0f);
+  std::vector<unsigned char> workspace(workspace_bytes, 0);
+  void* workspace_ptr = workspace.empty() ? nullptr : workspace.data();
 
   for (size_t i = 0; i < warmup_iterations; ++i) {
-    const mklibStatus_t status = mklibGemm(handle, &desc, a.data(), b.data(), c.data(), nullptr, 0);
+    const mklibStatus_t status =
+        mklibGemm(handle, &desc, a.data(), b.data(), c.data(), workspace_ptr, workspace_bytes);
     if (status != MKLIB_STATUS_SUCCESS) {
       std::cerr << "warmup mklibGemm failed: " << mklibGetStatusString(status) << '\n';
       mklibDestroy(handle);
@@ -108,7 +125,8 @@ int main(int argc, char** argv) {
   const auto start = std::chrono::steady_clock::now();
   mklibStatus_t gemm_status = MKLIB_STATUS_SUCCESS;
   for (size_t i = 0; i < iterations; ++i) {
-    gemm_status = mklibGemm(handle, &desc, a.data(), b.data(), c.data(), nullptr, workspace_bytes);
+    gemm_status =
+        mklibGemm(handle, &desc, a.data(), b.data(), c.data(), workspace_ptr, workspace_bytes);
     if (gemm_status != MKLIB_STATUS_SUCCESS) {
       std::cerr << "mklibGemm failed: " << mklibGetStatusString(gemm_status) << '\n';
       mklibDestroy(handle);
@@ -134,6 +152,8 @@ int main(int argc, char** argv) {
   std::cout << "n: " << desc.n << '\n';
   std::cout << "k: " << desc.k << '\n';
   std::cout << "workspace_bytes: " << workspace_bytes << '\n';
+  std::cout << "autotune_mode: " << (autotune ? "on" : "off") << '\n';
+  std::cout << "pointwise_mode: identity\n";
   std::cout << "gemm_ns_per_call: " << ns_per_call << '\n';
   std::cout << "gemm_gflops: " << gflops << '\n';
   std::cout << "checksum: " << checksum << '\n';

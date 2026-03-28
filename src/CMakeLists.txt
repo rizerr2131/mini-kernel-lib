@@ -1,9 +1,13 @@
 set(MKLIB_SOURCES
+  api/conv.cc
   api/gemm.cc
   api/handle.cc
+  api/reduction.cc
   api/status.cc
   api/tensor_desc.cc
+  backend/cuda/cuda_conv.cc
   backend/cuda/cuda_gemm.cc
+  backend/cuda/cuda_reduction.cc
   planner/dispatch_key.cc
   registry/kernel_registry.cc
 )

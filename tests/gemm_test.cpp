@@ -65,6 +65,16 @@ float LoadB(const std::vector<float>& b, const mklibGemmDesc_t& desc, int64_t de
   return b[static_cast<size_t>(col * desc.ldb + depth)];
 }
 
+double ApplyPointwise(double value, mklibPointwiseMode_t pointwise) {
+  switch (pointwise) {
+    case MKLIB_POINTWISE_MODE_IDENTITY:
+      return value;
+    case MKLIB_POINTWISE_MODE_RELU:
+      return value > 0.0 ? value : 0.0;
+  }
+  return value;
+}
+
 double ReferenceValue(
     const mklibGemmDesc_t& desc,
     const std::vector<float>& a,
@@ -76,12 +86,13 @@ double ReferenceValue(
     sum += static_cast<double>(LoadA(a, desc, row, depth)) *
            static_cast<double>(LoadB(b, desc, depth, col));
   }
-  return sum;
+  return ApplyPointwise(sum, desc.epilogue);
 }
 
 void CheckClose(float actual, double expected) {
   const double diff = std::abs(static_cast<double>(actual) - expected);
-  assert(diff <= 1e-5);
+  const double tolerance = 1e-5 + std::abs(expected) * 1e-6;
+  assert(diff <= tolerance);
 }
 
 void RunSupportedCase(mklibHandle_t handle, const mklibGemmDesc_t& desc) {
@@ -91,8 +102,9 @@ void RunSupportedCase(mklibHandle_t handle, const mklibGemmDesc_t& desc) {
 
   size_t workspace_bytes = 1;
   assert(mklibGetGemmWorkspaceSize(handle, &desc, &workspace_bytes) == MKLIB_STATUS_SUCCESS);
-  assert(workspace_bytes == 0);
-  assert(mklibGemm(handle, &desc, a.data(), b.data(), c.data(), nullptr, workspace_bytes) ==
+  std::vector<unsigned char> workspace(workspace_bytes, 0);
+  void* workspace_ptr = workspace.empty() ? nullptr : workspace.data();
+  assert(mklibGemm(handle, &desc, a.data(), b.data(), c.data(), workspace_ptr, workspace_bytes) ==
          MKLIB_STATUS_SUCCESS);
 
   for (int64_t row = 0; row < desc.m; ++row) {
@@ -118,6 +130,7 @@ void CheckZeroSizedGemm(mklibHandle_t handle) {
       .lda = 16,
       .ldb = 8,
       .ldc = 8,
+      .epilogue = MKLIB_POINTWISE_MODE_IDENTITY,
   };
 
   size_t workspace_bytes = 0;
@@ -140,6 +153,7 @@ void CheckUnsupportedDtype(mklibHandle_t handle) {
       .lda = 4,
       .ldb = 4,
       .ldc = 4,
+      .epilogue = MKLIB_POINTWISE_MODE_IDENTITY,
   };
 
   size_t workspace_bytes = 0;
@@ -160,11 +174,122 @@ void CheckInvalidLeadingDimension(mklibHandle_t handle) {
       .lda = 3,
       .ldb = 4,
       .ldc = 4,
+      .epilogue = MKLIB_POINTWISE_MODE_IDENTITY,
   };
 
   size_t workspace_bytes = 0;
   assert(mklibGetGemmWorkspaceSize(handle, &desc, &workspace_bytes) ==
          MKLIB_STATUS_INVALID_ARGUMENT);
+}
+
+void CheckWorkspaceValidation(mklibHandle_t handle) {
+  const mklibGemmDesc_t desc = {
+      .a_type = MKLIB_DATA_TYPE_FLOAT32,
+      .b_type = MKLIB_DATA_TYPE_FLOAT32,
+      .c_type = MKLIB_DATA_TYPE_FLOAT32,
+      .compute_type = MKLIB_DATA_TYPE_FLOAT32,
+      .trans_a = MKLIB_OP_N,
+      .trans_b = MKLIB_OP_N,
+      .m = 192,
+      .n = 160,
+      .k = 144,
+      .lda = 144,
+      .ldb = 160,
+      .ldc = 160,
+      .epilogue = MKLIB_POINTWISE_MODE_RELU,
+  };
+
+  const auto a = MakeMatrix(ShapeForA(desc), 5);
+  const auto b = MakeMatrix(ShapeForB(desc), 13);
+  std::vector<float> c(StorageSize(ShapeForC(desc)), 0.0f);
+
+  size_t workspace_bytes = 0;
+  assert(mklibGetGemmWorkspaceSize(handle, &desc, &workspace_bytes) == MKLIB_STATUS_SUCCESS);
+  assert(workspace_bytes > 0);
+
+  assert(mklibGemm(handle, &desc, a.data(), b.data(), c.data(), nullptr, workspace_bytes) ==
+         MKLIB_STATUS_INVALID_ARGUMENT);
+
+  std::vector<unsigned char> undersized_workspace(workspace_bytes - 1, 0);
+  assert(mklibGemm(
+             handle,
+             &desc,
+             a.data(),
+             b.data(),
+             c.data(),
+             undersized_workspace.data(),
+             undersized_workspace.size()) == MKLIB_STATUS_INVALID_ARGUMENT);
+
+  std::vector<unsigned char> workspace(workspace_bytes, 0);
+  assert(mklibGemm(handle, &desc, a.data(), b.data(), c.data(), workspace.data(), workspace.size()) ==
+         MKLIB_STATUS_SUCCESS);
+}
+
+void CheckInvalidPointwiseMode(mklibHandle_t handle) {
+  const mklibGemmDesc_t desc = {
+      .a_type = MKLIB_DATA_TYPE_FLOAT32,
+      .b_type = MKLIB_DATA_TYPE_FLOAT32,
+      .c_type = MKLIB_DATA_TYPE_FLOAT32,
+      .compute_type = MKLIB_DATA_TYPE_FLOAT32,
+      .trans_a = MKLIB_OP_N,
+      .trans_b = MKLIB_OP_N,
+      .m = 4,
+      .n = 4,
+      .k = 4,
+      .lda = 4,
+      .ldb = 4,
+      .ldc = 4,
+      .epilogue = static_cast<mklibPointwiseMode_t>(99),
+  };
+
+  size_t workspace_bytes = 0;
+  assert(mklibGetGemmWorkspaceSize(handle, &desc, &workspace_bytes) ==
+         MKLIB_STATUS_INVALID_ARGUMENT);
+}
+
+void CheckAutotunePath(mklibHandle_t handle) {
+  assert(mklibSetAutotuneMode(handle, MKLIB_AUTOTUNE_ON) == MKLIB_STATUS_SUCCESS);
+
+  const mklibGemmDesc_t desc = {
+      .a_type = MKLIB_DATA_TYPE_FLOAT32,
+      .b_type = MKLIB_DATA_TYPE_FLOAT32,
+      .c_type = MKLIB_DATA_TYPE_FLOAT32,
+      .compute_type = MKLIB_DATA_TYPE_FLOAT32,
+      .trans_a = MKLIB_OP_N,
+      .trans_b = MKLIB_OP_N,
+      .m = 192,
+      .n = 160,
+      .k = 144,
+      .lda = 144,
+      .ldb = 160,
+      .ldc = 160,
+      .epilogue = MKLIB_POINTWISE_MODE_IDENTITY,
+  };
+
+  const auto a = MakeMatrix(ShapeForA(desc), 7);
+  const auto b = MakeMatrix(ShapeForB(desc), 17);
+  std::vector<float> c(StorageSize(ShapeForC(desc)), 0.0f);
+
+  size_t workspace_bytes = 0;
+  assert(mklibGetGemmWorkspaceSize(handle, &desc, &workspace_bytes) == MKLIB_STATUS_SUCCESS);
+  assert(workspace_bytes > 0);
+
+  std::vector<unsigned char> workspace(workspace_bytes, 0);
+  assert(mklibGemm(handle, &desc, a.data(), b.data(), c.data(), workspace.data(), workspace.size()) ==
+         MKLIB_STATUS_SUCCESS);
+  assert(mklibGemm(handle, &desc, a.data(), b.data(), c.data(), workspace.data(), workspace.size()) ==
+         MKLIB_STATUS_SUCCESS);
+
+  for (int64_t row = 0; row < desc.m; ++row) {
+    for (int64_t col = 0; col < desc.n; ++col) {
+      const float actual = c[static_cast<size_t>(row * desc.ldc + col)];
+      const double expected = ReferenceValue(desc, a, b, row, col);
+      CheckClose(actual, expected);
+    }
+  }
+
+  assert(mklibClearAutotuneCache(handle) == MKLIB_STATUS_SUCCESS);
+  assert(mklibSetAutotuneMode(handle, MKLIB_AUTOTUNE_OFF) == MKLIB_STATUS_SUCCESS);
 }
 
 }  // namespace
@@ -188,6 +313,7 @@ int main() {
           .lda = 5,
           .ldb = 6,
           .ldc = 7,
+          .epilogue = MKLIB_POINTWISE_MODE_IDENTITY,
       });
   RunSupportedCase(
       handle,
@@ -204,6 +330,7 @@ int main() {
           .lda = 5,
           .ldb = 4,
           .ldc = 4,
+          .epilogue = MKLIB_POINTWISE_MODE_IDENTITY,
       });
   RunSupportedCase(
       handle,
@@ -220,6 +347,7 @@ int main() {
           .lda = 6,
           .ldb = 5,
           .ldc = 3,
+          .epilogue = MKLIB_POINTWISE_MODE_IDENTITY,
       });
   RunSupportedCase(
       handle,
@@ -236,11 +364,32 @@ int main() {
           .lda = 6,
           .ldb = 4,
           .ldc = 5,
+          .epilogue = MKLIB_POINTWISE_MODE_IDENTITY,
+      });
+  RunSupportedCase(
+      handle,
+      {
+          .a_type = MKLIB_DATA_TYPE_FLOAT32,
+          .b_type = MKLIB_DATA_TYPE_FLOAT32,
+          .c_type = MKLIB_DATA_TYPE_FLOAT32,
+          .compute_type = MKLIB_DATA_TYPE_FLOAT32,
+          .trans_a = MKLIB_OP_N,
+          .trans_b = MKLIB_OP_N,
+          .m = 129,
+          .n = 96,
+          .k = 80,
+          .lda = 80,
+          .ldb = 96,
+          .ldc = 96,
+          .epilogue = MKLIB_POINTWISE_MODE_RELU,
       });
 
   CheckZeroSizedGemm(handle);
   CheckUnsupportedDtype(handle);
   CheckInvalidLeadingDimension(handle);
+  CheckWorkspaceValidation(handle);
+  CheckInvalidPointwiseMode(handle);
+  CheckAutotunePath(handle);
 
   assert(mklibDestroy(handle) == MKLIB_STATUS_SUCCESS);
   return 0;

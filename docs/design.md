@@ -20,20 +20,24 @@ What exists in the repo so far:
 
 - CMake skeleton
 - C API scaffold
-- handle API
+- handle API with experimental autotune state
 - tensor descriptor API
-- GEMM entry points
+- GEMM, reduction, and `conv2d` forward entry points
 - planner / registry / backend split
-- one real FP32 reference GEMM path
+- two real FP32 reference GEMM paths with fused ReLU epilogue support
+- one real FP32 reduction-sum path
+- one real FP32 `conv2d` forward path
 - smoke test
 - GEMM correctness test
-- GEMM benchmark harness
+- reduction correctness test
+- convolution correctness test
+- GEMM / reduction / convolution benchmark harnesses
 
 What does not exist yet:
 
 - real CUDA kernels
-- more than one registered kernel
-- real dispatch heuristics
+- broad dtype or layout coverage
+- real production dispatch heuristics
 - correctness tests against actual GPU work
 - benchmark numbers on real GPU kernels
 
@@ -57,16 +61,17 @@ I do not want this to turn into a random pile of kernels dumped into one file.
 Current plan:
 
 - CUDA only
-- GEMM first
-- pointwise / fused epilogues after that
-- reductions
-- normalization
+- keep the API handle / descriptor / workspace shape small and explicit
+- keep GEMM / pointwise / reduction / conv forward working end to end
+- use reference kernels to keep dispatch honest while GPU kernels are still missing
+- use autotune only as an explicit experiment, not magic default behavior
 
 Later, if the basic shape holds up:
 
-- convolution forward
+- real CUDA kernels for the existing ops
 - better dispatch heuristics
-- autotuning or algorithm cache
+- autotuning or algorithm cache beyond a small experiment
+- normalization
 - wider dtype support
 
 I am intentionally not trying to cover everything up front.
@@ -108,6 +113,9 @@ typedef struct mklibTensorDesc* mklibTensorDesc_t;
 mklibStatus_t mklibCreate(mklibHandle_t* out);
 mklibStatus_t mklibDestroy(mklibHandle_t handle);
 mklibStatus_t mklibSetStream(mklibHandle_t handle, void* stream);
+mklibStatus_t mklibSetAutotuneMode(
+    mklibHandle_t handle,
+    mklibAutotuneMode_t mode);
 
 mklibStatus_t mklibCreateTensorDesc(mklibTensorDesc_t* out);
 mklibStatus_t mklibSetTensorDesc(
@@ -132,6 +140,9 @@ mklibStatus_t mklibGemm(
     size_t workspace_size);
 ```
 
+Reduction and `conv2d` forward follow the same basic pattern:
+descriptor-backed validation, explicit workspace query, explicit status
+returns, and a planner / registry / backend hop before the actual kernel.
 This is still early and I expect it to move around.
 
 ## Code Layout I Am Aiming For
@@ -166,18 +177,17 @@ For GEMM, that key will probably include at least:
 - dtype / compute type
 - transpose flags
 - problem size bucket
-- architecture
-- alignment info
-- maybe layout class later
+- pointwise epilogue
+- workspace class
 
-The current M2 implementation now carries dtype, transpose, and shape-bucket
-information far enough to register one FP32 GEMM kernel cleanly. That is still
-far from a real dispatch policy, but it is enough to keep the API separated
-from kernel selection.
+For reduction and convolution, the same idea now extends to layout class,
+axis role, and coarse problem sizing. The current M5 implementation still uses
+simple keys, but it is enough to keep the public API separated from kernel
+selection and to let multiple reference kernels coexist.
 
 ## First Kernel Plan
 
-The first real thing I want is one actual GEMM path end to end:
+The first real thing I wanted was one actual GEMM path end to end:
 
 - descriptor / API path
 - dispatch key
@@ -186,10 +196,15 @@ The first real thing I want is one actual GEMM path end to end:
 - correctness check
 - benchmark result
 
-I would rather have one real GEMM path than five half-built ops.
-For the current M2 checkpoint, the repo takes the cheaper useful step first:
-the registered kernel is a host reference GEMM that keeps the API and dispatch
-path honest while the actual CUDA kernel work is still pending.
+That first step is done now, and the repo has moved a bit further:
+
+- two reference GEMM kernels
+- one reference reduction kernel family
+- one reference `conv2d` forward kernel
+- an opt-in GEMM autotune experiment on the handle
+
+The actual CUDA kernel work is still pending, but the API and dispatch path are
+already exercising the shape I wanted.
 
 ## Dtypes And Layouts
 
@@ -234,8 +249,9 @@ Benchmarking plan:
 - record hardware / dtype / shape
 - no big performance claims without measurements
 
-The repo now has a first real GEMM benchmark target; the next step is to
-compare real CUDA kernel variants instead of only a reference path.
+The repo now has benchmark targets for GEMM, reduction, and convolution, plus
+an opt-in autotuned GEMM benchmark mode. The next step is to compare actual
+CUDA kernel variants instead of only reference paths.
 
 ## Repo Shape
 
@@ -265,7 +281,7 @@ cmake/
 Not every directory needs to exist immediately, but this is the structure I
 want instead of a flat repo.
 
-## Milestones I Have In Mind
+## Milestones
 
 M0:
 
@@ -286,21 +302,29 @@ M2:
 - correctness test
 - first benchmark number
 
+Status: done
+
 M3:
 
 - better GEMM path or second GEMM variant
 - fused pointwise work
 - more validation around workspace / descriptors
 
+Status: done
+
 M4:
 
 - reductions or normalization
 - better dispatch logic
 
+Status: done via reductions plus broader dispatch keys
+
 M5:
 
 - convolution forward if the rest still feels clean
 - autotuning experiments if they seem worth it
+
+Status: done via reference `conv2d` forward plus handle-scoped GEMM autotuning
 
 ## Open Questions
 

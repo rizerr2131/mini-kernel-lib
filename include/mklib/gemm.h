@@ -16,6 +16,11 @@ typedef enum mklibTranspose {
   MKLIB_OP_T = 1
 } mklibTranspose_t;
 
+typedef enum mklibPointwiseMode {
+  MKLIB_POINTWISE_MODE_IDENTITY = 0,
+  MKLIB_POINTWISE_MODE_RELU = 1
+} mklibPointwiseMode_t;
+
 typedef struct mklibGemmDesc {
   mklibDataType_t a_type;
   mklibDataType_t b_type;
@@ -29,6 +34,7 @@ typedef struct mklibGemmDesc {
   int64_t lda;
   int64_t ldb;
   int64_t ldc;
+  mklibPointwiseMode_t epilogue;
 } mklibGemmDesc_t;
 
 /*
