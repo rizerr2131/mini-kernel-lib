@@ -61,10 +61,35 @@ int main() {
   assert(mklibGetGemmWorkspaceSize(handle, &gemm_desc, &workspace_bytes) == MKLIB_STATUS_SUCCESS);
   assert(workspace_bytes == 0);
 
-  float a[16 * 16] = {};
-  float b[16 * 16] = {};
-  float c[16 * 16] = {};
-  assert(mklibGemm(handle, &gemm_desc, a, b, c, nullptr, 0) == MKLIB_STATUS_NOT_SUPPORTED);
+  const mklibGemmDesc_t small_gemm_desc = {
+      .a_type = MKLIB_DATA_TYPE_FLOAT32,
+      .b_type = MKLIB_DATA_TYPE_FLOAT32,
+      .c_type = MKLIB_DATA_TYPE_FLOAT32,
+      .compute_type = MKLIB_DATA_TYPE_FLOAT32,
+      .trans_a = MKLIB_OP_N,
+      .trans_b = MKLIB_OP_N,
+      .m = 2,
+      .n = 2,
+      .k = 3,
+      .lda = 3,
+      .ldb = 2,
+      .ldc = 2,
+  };
+  const float a[2 * 3] = {
+      1.0f, 2.0f, 3.0f,
+      4.0f, 5.0f, 6.0f,
+  };
+  const float b[3 * 2] = {
+      7.0f, 8.0f,
+      9.0f, 10.0f,
+      11.0f, 12.0f,
+  };
+  float c[2 * 2] = {};
+  assert(mklibGemm(handle, &small_gemm_desc, a, b, c, nullptr, 0) == MKLIB_STATUS_SUCCESS);
+  assert(c[0] == 58.0f);
+  assert(c[1] == 64.0f);
+  assert(c[2] == 139.0f);
+  assert(c[3] == 154.0f);
 
   assert(mklibDestroyTensorDesc(desc) == MKLIB_STATUS_SUCCESS);
   assert(mklibDestroy(handle) == MKLIB_STATUS_SUCCESS);

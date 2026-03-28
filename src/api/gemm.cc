@@ -27,6 +27,14 @@ bool IsValidDataType(mklibDataType_t dtype) {
   return false;
 }
 
+int64_t MinimumLeadingDimensionForA(const mklibGemmDesc_t& desc) {
+  return desc.trans_a == MKLIB_OP_N ? desc.k : desc.m;
+}
+
+int64_t MinimumLeadingDimensionForB(const mklibGemmDesc_t& desc) {
+  return desc.trans_b == MKLIB_OP_N ? desc.n : desc.k;
+}
+
 mklibStatus_t ValidateGemmDesc(const mklibGemmDesc_t* desc) {
   if (desc == nullptr) {
     return MKLIB_STATUS_INVALID_ARGUMENT;
@@ -46,6 +54,11 @@ mklibStatus_t ValidateGemmDesc(const mklibGemmDesc_t* desc) {
   if (desc->lda <= 0 || desc->ldb <= 0 || desc->ldc <= 0) {
     return MKLIB_STATUS_INVALID_ARGUMENT;
   }
+  if (desc->lda < MinimumLeadingDimensionForA(*desc) ||
+      desc->ldb < MinimumLeadingDimensionForB(*desc) ||
+      desc->ldc < desc->n) {
+    return MKLIB_STATUS_INVALID_ARGUMENT;
+  }
   return MKLIB_STATUS_SUCCESS;
 }
 
@@ -62,6 +75,12 @@ mklibStatus_t mklibGetGemmWorkspaceSize(
   const mklibStatus_t status = ValidateGemmDesc(desc);
   if (status != MKLIB_STATUS_SUCCESS) {
     return status;
+  }
+
+  const auto key = mklib::planner::BuildGemmDispatchKey(*desc);
+  const auto* kernel = mklib::registry::SelectGemmKernel(key);
+  if (kernel == nullptr) {
+    return MKLIB_STATUS_NOT_SUPPORTED;
   }
 
   *bytes_out = 0;
@@ -85,6 +104,12 @@ mklibStatus_t mklibGemm(
     return status;
   }
 
+  const auto key = mklib::planner::BuildGemmDispatchKey(*desc);
+  const auto* kernel = mklib::registry::SelectGemmKernel(key);
+  if (kernel == nullptr) {
+    return MKLIB_STATUS_NOT_SUPPORTED;
+  }
+
   if (desc->m == 0 || desc->n == 0 || desc->k == 0) {
     (void)a;
     (void)b;
@@ -96,12 +121,6 @@ mklibStatus_t mklibGemm(
 
   if (a == nullptr || b == nullptr || c == nullptr) {
     return MKLIB_STATUS_INVALID_ARGUMENT;
-  }
-
-  const auto key = mklib::planner::BuildGemmDispatchKey(*desc);
-  const auto* kernel = mklib::registry::SelectGemmKernel(key);
-  if (kernel == nullptr) {
-    return MKLIB_STATUS_NOT_SUPPORTED;
   }
 
   return mklib::backend::LaunchGemm(

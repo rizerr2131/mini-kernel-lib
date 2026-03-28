@@ -19,6 +19,9 @@ enum class ShapeBucket {
 
 struct DispatchKey {
   OperationKind operation = OperationKind::kGemm;
+  mklibDataType_t a_type = MKLIB_DATA_TYPE_INVALID;
+  mklibDataType_t b_type = MKLIB_DATA_TYPE_INVALID;
+  mklibDataType_t c_type = MKLIB_DATA_TYPE_INVALID;
   mklibDataType_t compute_type = MKLIB_DATA_TYPE_INVALID;
   mklibTranspose_t trans_a = MKLIB_OP_N;
   mklibTranspose_t trans_b = MKLIB_OP_N;

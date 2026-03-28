@@ -24,16 +24,18 @@ What exists in the repo so far:
 - tensor descriptor API
 - GEMM entry points
 - planner / registry / backend split
+- one real FP32 reference GEMM path
 - smoke test
-- benchmark stub
+- GEMM correctness test
+- GEMM benchmark harness
 
 What does not exist yet:
 
 - real CUDA kernels
-- real kernel registration
+- more than one registered kernel
 - real dispatch heuristics
 - correctness tests against actual GPU work
-- benchmark numbers that mean anything
+- benchmark numbers on real GPU kernels
 
 ## What I Want Out Of This
 
@@ -168,8 +170,10 @@ For GEMM, that key will probably include at least:
 - alignment info
 - maybe layout class later
 
-Right now the planner and registry are just stubs, but this is the shape I want
-to grow into.
+The current M2 implementation now carries dtype, transpose, and shape-bucket
+information far enough to register one FP32 GEMM kernel cleanly. That is still
+far from a real dispatch policy, but it is enough to keep the API separated
+from kernel selection.
 
 ## First Kernel Plan
 
@@ -183,6 +187,9 @@ The first real thing I want is one actual GEMM path end to end:
 - benchmark result
 
 I would rather have one real GEMM path than five half-built ops.
+For the current M2 checkpoint, the repo takes the cheaper useful step first:
+the registered kernel is a host reference GEMM that keeps the API and dispatch
+path honest while the actual CUDA kernel work is still pending.
 
 ## Dtypes And Layouts
 
@@ -227,8 +234,8 @@ Benchmarking plan:
 - record hardware / dtype / shape
 - no big performance claims without measurements
 
-Right now the benchmark target is just a stub, which is fine for the current
-stage.
+The repo now has a first real GEMM benchmark target; the next step is to
+compare real CUDA kernel variants instead of only a reference path.
 
 ## Repo Shape
 

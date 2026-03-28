@@ -31,6 +31,11 @@ typedef struct mklibGemmDesc {
   int64_t ldc;
 } mklibGemmDesc_t;
 
+/*
+ * The current implementation provides a row-major FP32 GEMM path.
+ * lda, ldb, and ldc are row strides for the underlying matrix storage.
+ */
+
 MKLIB_API mklibStatus_t mklibGetGemmWorkspaceSize(
     mklibHandle_t handle,
     const mklibGemmDesc_t* desc,

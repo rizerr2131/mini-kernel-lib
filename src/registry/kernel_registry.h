@@ -5,8 +5,13 @@
 
 namespace mklib::registry {
 
+enum class KernelKind {
+  kReferenceF32,
+};
+
 struct KernelRecord {
   const char* name;
+  KernelKind kind;
 };
 
 const KernelRecord* SelectGemmKernel(const planner::DispatchKey& key);

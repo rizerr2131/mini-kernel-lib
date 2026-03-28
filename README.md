@@ -7,14 +7,16 @@ descriptors, streams, workspace queries, and kernel dispatch.
 
 ## Status
 
-Early repo. There is no stable API or working CUDA kernel implementation yet.
+Early repo. There is no stable API or working CUDA kernel implementation yet,
+but the repo now has one real FP32 reference GEMM path end to end.
 
 Current scaffold:
 
 - CMake build skeleton
 - C API skeleton for status, handle, tensor descriptor, and GEMM entry points
-- planner/registry/backend split with stubs
-- one smoke test and one benchmark stub
+- planner/registry/backend split with one registered FP32 reference GEMM path
+- smoke coverage plus GEMM correctness tests
+- GEMM benchmark harness with timing output
 
 ## Scope
 
