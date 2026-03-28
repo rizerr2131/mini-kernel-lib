@@ -1,60 +1,58 @@
 # mini-kernel-lib
 
-`mini-kernel-lib` is a CUDA-first GPU kernel library.
+`mini-kernel-lib` is a small CUDA-first kernel library scaffold.
 
-The plan is to build a small set of math and tensor ops with explicit handles,
-descriptors, streams, workspace queries, and kernel dispatch.
+The repo is about getting the shape right first: explicit handles,
+descriptors, streams, workspace queries, and a dispatch layer between the API
+and the implementation.
 
-## Status
+## TL;DR
 
-Early repo. There is no stable API or working CUDA kernel implementation yet,
-but the repo now has one real FP32 reference GEMM path end to end.
+What is real today:
 
-Current scaffold:
+- Static C++20 library with a small C API in `include/mklib/`
+- Public entry points for status, handle/stream state, tensor descriptors, and
+  GEMM
+- Planner/registry/backend split with one registered GEMM path
+- Working row-major FP32 GEMM reference implementation with `N/T`
+  transpose support and zero workspace
+- Smoke test, GEMM correctness test, and a GEMM benchmark target
 
-- CMake build skeleton
-- C API skeleton for status, handle, tensor descriptor, and GEMM entry points
-- planner/registry/backend split with one registered FP32 reference GEMM path
-- smoke coverage plus GEMM correctness tests
-- GEMM benchmark harness with timing output
+What is not real yet:
 
-## Scope
+- Stable API
+- Actual CUDA kernels or GPU execution
+- More than one registered kernel
+- Real dispatch heuristics or autotuning
+- Pointwise, reduction, normalization, or convolution implementations
 
-Current targets:
+## Build
 
-- CUDA runtime and backend
-- GEMM
-- Pointwise and fused epilogues
-- Reductions
-- Normalization
-- Benchmarks and correctness tests
+```sh
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
 
-Later:
+Optional benchmark:
 
-- Convolution forward
-- Better dispatch heuristics and autotuning
-- More dtypes and layout coverage
+Run `mklib_gemm_bench` from your build tree after building. The exact path
+depends on the CMake generator.
 
-## Principles
+If CMake finds the CUDA toolkit it records that in the build, but the current
+GEMM path is still a host reference implementation.
 
-- Keep the public API small.
-- Keep state explicit.
-- Split API, runtime, planner, and kernels cleanly.
-- Do not claim performance wins without tests and benchmarks.
-- Keep internals replaceable without breaking the public surface.
+## Repo Layout
 
-## Repo Plan
-
-The rough layout is:
-
-- `include/` for public headers
-- `src/` for API, runtime, planner, and backend code
-- `kernels/` for kernel implementations
-- `tests/` for correctness tests
-- `benchmarks/` for benchmarks
-- `docs/` for design notes
-
-More detail is in [docs/design.md](docs/design.md).
+- `include/` public headers
+- `src/api/` public entry points and validation
+- `src/runtime/` internal handle and descriptor state
+- `src/planner/` dispatch-key construction
+- `src/registry/` kernel selection
+- `src/backend/cuda/` current launch path
+- `tests/` correctness coverage
+- `benchmarks/` benchmark harnesses
+- `docs/` design notes
 
 ## Docs
 
