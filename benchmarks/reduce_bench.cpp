@@ -7,6 +7,10 @@
 
 #include "mklib/mklib.h"
 
+#if MKLIB_HAS_CUDA_BACKEND
+#include <cuda_runtime_api.h>
+#endif
+
 namespace {
 
 int64_t ParsePositiveInt64(const char* value, int64_t fallback) {
@@ -44,6 +48,18 @@ std::vector<float> MakeInput(int64_t outer, int64_t reduce, int64_t inner) {
   return input;
 }
 
+#if MKLIB_HAS_CUDA_BACKEND
+bool HasCudaDevice() {
+  int device_count = 0;
+  const cudaError_t error = cudaGetDeviceCount(&device_count);
+  if (error != cudaSuccess) {
+    (void)cudaGetLastError();
+    return false;
+  }
+  return device_count > 0;
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -52,6 +68,7 @@ int main(int argc, char** argv) {
   int64_t outer = 512;
   int64_t reduce = 1024;
   int64_t inner = 1;
+  bool device_buffers = false;
 
   if (argc > 1) {
     iterations = ParsePositiveSizeT(argv[1], iterations);
@@ -67,6 +84,9 @@ int main(int argc, char** argv) {
   }
   if (argc > 5) {
     warmup_iterations = ParsePositiveSizeT(argv[5], warmup_iterations);
+  }
+  if (argc > 6) {
+    device_buffers = ParsePositiveInt64(argv[6], 0) != 0;
   }
 
   mklibHandle_t handle = nullptr;
@@ -134,19 +154,81 @@ int main(int argc, char** argv) {
 
   auto input = MakeInput(outer, reduce, inner);
   std::vector<float> output(static_cast<size_t>(outer * inner), 0.0f);
+  const void* input_ptr = input.data();
+  void* output_ptr = output.data();
+
+#if MKLIB_HAS_CUDA_BACKEND
+  float* device_input = nullptr;
+  float* device_output = nullptr;
+  if (device_buffers) {
+    if (!HasCudaDevice()) {
+      std::cerr << "device buffer mode requested but no CUDA device is available\n";
+      mklibDestroyTensorDesc(output_desc);
+      mklibDestroyTensorDesc(input_desc);
+      mklibDestroy(handle);
+      return 1;
+    }
+    if (cudaMalloc(reinterpret_cast<void**>(&device_input), input.size() * sizeof(float)) != cudaSuccess ||
+        cudaMalloc(reinterpret_cast<void**>(&device_output), output.size() * sizeof(float)) != cudaSuccess) {
+      std::cerr << "cudaMalloc failed for reduction benchmark buffers\n";
+      if (device_output != nullptr) {
+        cudaFree(device_output);
+      }
+      if (device_input != nullptr) {
+        cudaFree(device_input);
+      }
+      mklibDestroyTensorDesc(output_desc);
+      mklibDestroyTensorDesc(input_desc);
+      mklibDestroy(handle);
+      return 1;
+    }
+    if (cudaMemcpy(device_input, input.data(), input.size() * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemset(device_output, 0, output.size() * sizeof(float)) != cudaSuccess) {
+      std::cerr << "CUDA host-to-device copy failed\n";
+      cudaFree(device_output);
+      cudaFree(device_input);
+      mklibDestroyTensorDesc(output_desc);
+      mklibDestroyTensorDesc(input_desc);
+      mklibDestroy(handle);
+      return 1;
+    }
+
+    input_ptr = device_input;
+    output_ptr = device_output;
+  }
+#else
+  if (device_buffers) {
+    std::cerr << "device buffer mode requested but this build has no CUDA backend\n";
+    mklibDestroyTensorDesc(output_desc);
+    mklibDestroyTensorDesc(input_desc);
+    mklibDestroy(handle);
+    return 1;
+  }
+#endif
 
   for (size_t i = 0; i < warmup_iterations; ++i) {
     const mklibStatus_t status = mklibReduce(
         handle,
         input_desc,
-        input.data(),
+        input_ptr,
         output_desc,
-        output.data(),
+        output_ptr,
         &desc,
         nullptr,
         workspace_bytes);
     if (status != MKLIB_STATUS_SUCCESS) {
       std::cerr << "warmup mklibReduce failed: " << mklibGetStatusString(status) << '\n';
+#if MKLIB_HAS_CUDA_BACKEND
+      if (device_output != nullptr) {
+        cudaFree(device_output);
+      }
+      if (device_input != nullptr) {
+        cudaFree(device_input);
+      }
+#endif
+      mklibDestroyTensorDesc(output_desc);
+      mklibDestroyTensorDesc(input_desc);
+      mklibDestroy(handle);
       return 1;
     }
   }
@@ -156,18 +238,43 @@ int main(int argc, char** argv) {
     const mklibStatus_t status = mklibReduce(
         handle,
         input_desc,
-        input.data(),
+        input_ptr,
         output_desc,
-        output.data(),
+        output_ptr,
         &desc,
         nullptr,
         workspace_bytes);
     if (status != MKLIB_STATUS_SUCCESS) {
       std::cerr << "mklibReduce failed: " << mklibGetStatusString(status) << '\n';
+#if MKLIB_HAS_CUDA_BACKEND
+      if (device_output != nullptr) {
+        cudaFree(device_output);
+      }
+      if (device_input != nullptr) {
+        cudaFree(device_input);
+      }
+#endif
+      mklibDestroyTensorDesc(output_desc);
+      mklibDestroyTensorDesc(input_desc);
+      mklibDestroy(handle);
       return 1;
     }
   }
   const auto stop = std::chrono::steady_clock::now();
+
+#if MKLIB_HAS_CUDA_BACKEND
+  if (device_buffers) {
+    if (cudaMemcpy(output.data(), device_output, output.size() * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) {
+      std::cerr << "CUDA device-to-host copy failed\n";
+      cudaFree(device_output);
+      cudaFree(device_input);
+      mklibDestroyTensorDesc(output_desc);
+      mklibDestroyTensorDesc(input_desc);
+      mklibDestroy(handle);
+      return 1;
+    }
+  }
+#endif
 
   const double total_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start).count();
@@ -185,10 +292,24 @@ int main(int argc, char** argv) {
   std::cout << "reduce: " << reduce << '\n';
   std::cout << "inner: " << inner << '\n';
   std::cout << "workspace_bytes: " << workspace_bytes << '\n';
+  std::cout << "buffer_mode: " << (device_buffers ? "device" : "host") << '\n';
   std::cout << "reduce_ns_per_call: " << ns_per_call << '\n';
   std::cout << "reduce_elements_per_second: " << elements_per_second << '\n';
   std::cout << "checksum: " << checksum << '\n';
+#if MKLIB_HAS_CUDA_BACKEND
+  std::cout << "cuda_backend: built\n";
+#else
+  std::cout << "cuda_backend: not built\n";
+#endif
 
+#if MKLIB_HAS_CUDA_BACKEND
+  if (device_output != nullptr) {
+    cudaFree(device_output);
+  }
+  if (device_input != nullptr) {
+    cudaFree(device_input);
+  }
+#endif
   mklibDestroyTensorDesc(output_desc);
   mklibDestroyTensorDesc(input_desc);
   mklibDestroy(handle);

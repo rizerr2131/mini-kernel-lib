@@ -25,20 +25,32 @@ What exists in the repo so far:
 - GEMM, reduction, and `conv2d` forward entry points
 - planner / registry / backend split
 - two real FP32 reference GEMM paths with fused ReLU epilogue support
-- one real FP32 reduction-sum path
-- one real FP32 `conv2d` forward path
+- one real CUDA FP32 tiled GEMM path for the current `N/T` transpose combinations
+- real CUDA FP32 contiguous reduction-sum paths for device buffers, including
+  an inner-axis specialization plus a generic contiguous fallback
+- one real FP32 reduction-sum reference path for the broader contiguous cases
+- one real CUDA FP32 direct `conv2d` forward path for contiguous device buffers
+  using the existing pad / stride / dilation descriptor fields
+- one real FP32 `conv2d` forward reference path
 - smoke test
 - GEMM correctness test
+- CUDA GEMM host-fallback plus device-buffer correctness test when the CUDA
+  backend is built
+- CUDA reduction host-fallback plus device-buffer correctness test when the
+  CUDA backend is built
+- CUDA convolution host-fallback plus device-buffer correctness test when the
+  CUDA backend is built, including a non-unit dilation case
 - reduction correctness test
 - convolution correctness test
 - GEMM / reduction / convolution benchmark harnesses
 
 What does not exist yet:
 
-- real CUDA kernels
+- broad real CUDA kernel coverage
 - broad dtype or layout coverage
 - real production dispatch heuristics
-- correctness tests against actual GPU work
+- broad correctness tests against actual GPU work beyond the current GEMM,
+  reduction, and convolution slices
 - benchmark numbers on real GPU kernels
 
 ## What I Want Out Of This
@@ -63,12 +75,12 @@ Current plan:
 - CUDA only
 - keep the API handle / descriptor / workspace shape small and explicit
 - keep GEMM / pointwise / reduction / conv forward working end to end
-- use reference kernels to keep dispatch honest while GPU kernels are still missing
+- use reference kernels to keep dispatch honest while GPU kernels are still incomplete
 - use autotune only as an explicit experiment, not magic default behavior
 
 Later, if the basic shape holds up:
 
-- real CUDA kernels for the existing ops
+- more real CUDA kernels for the existing ops
 - better dispatch heuristics
 - autotuning or algorithm cache beyond a small experiment
 - normalization
@@ -196,15 +208,44 @@ The first real thing I wanted was one actual GEMM path end to end:
 - correctness check
 - benchmark result
 
-That first step is done now, and the repo has moved a bit further:
+That first real CUDA step is now partially done, and the repo has moved a bit
+further:
 
+- one real CUDA FP32 tiled GEMM path for the current `N/T` transpose combinations
+- real CUDA FP32 contiguous reduction paths for device buffers, including an
+  inner-axis specialization plus a generic contiguous path
+- one real CUDA FP32 direct `conv2d` forward path for contiguous device buffers
+  using the descriptor-driven pad / stride / dilation controls
 - two reference GEMM kernels
-- one reference reduction kernel family
+- one reference reduction kernel family for the broader contiguous cases
 - one reference `conv2d` forward kernel
 - an opt-in GEMM autotune experiment on the handle
 
-The actual CUDA kernel work is still pending, but the API and dispatch path are
-already exercising the shape I wanted.
+The important bit is that the public API shape did not need to change. The
+current GEMM flow still goes through descriptor validation, dispatch-key
+construction, registry selection, backend launch, and workspace handling. The
+CUDA path is just one more kernel record in that stack. When callers keep using
+plain host buffers, the dispatch still falls back to the host reference kernels.
+The GEMM launch path now keeps that fallback behavior even when autotune or a
+cached preferred kernel points at a higher-workspace variant: the API retries
+other compatible candidates before it gives up. That means the workspace query
+can stay conservative for the preferred kernel without turning every smaller
+workspace launch into a hard failure.
+The current CUDA launch wrapper also synchronizes the selected stream before it
+returns so correctness tests and autotune timings stay deterministic while the
+backend is still narrow.
+Reduction now follows the same pattern for the contiguous cases too: the
+registry prefers the CUDA kernels when those slices are available, but the API
+still retries the reference reduction kernels when callers pass host buffers.
+`conv2d` forward now follows the same pattern for the direct contiguous case.
+The current validation and benchmark harnesses exercise that CUDA path across
+more than the trivial unit-stride shape, including non-unit stride and
+dilation descriptors, while still retrying the reference kernel when the
+buffers are not CUDA-device-accessible.
+The CUDA pointer inspection layer now treats ordinary host allocations as
+host-only buffers instead of dropping them on the floor as
+`cudaMemoryTypeUnregistered`, which keeps those reference fallbacks working in
+CUDA-enabled builds too.
 
 ## Dtypes And Layouts
 
@@ -250,8 +291,11 @@ Benchmarking plan:
 - no big performance claims without measurements
 
 The repo now has benchmark targets for GEMM, reduction, and convolution, plus
-an opt-in autotuned GEMM benchmark mode. The next step is to compare actual
-CUDA kernel variants instead of only reference paths.
+an opt-in autotuned GEMM benchmark mode and optional device-buffer GEMM,
+reduction, and convolution benchmark modes when the CUDA backend is built. The
+next step is to compare multiple CUDA kernel variants instead of only one
+tiled GEMM path, the current contiguous reduction paths, and one direct
+convolution path versus the reference implementations.
 
 ## Repo Shape
 
